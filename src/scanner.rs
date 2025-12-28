@@ -1,10 +1,11 @@
 use crate::error::{FsgitError, Result};
 use crate::git;
 use crate::matcher::RepositoryPattern;
+use crate::progress::ProgressMessage;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::fs;
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::{mpsc, Mutex, Semaphore};
 
 #[derive(Debug, Clone)]
 pub struct MatchResult {
@@ -16,7 +17,7 @@ pub struct Scanner {
     search_path: PathBuf,
     pattern: RepositoryPattern,
     max_concurrent: usize,
-    verbose: bool,
+    verbose: u8,
 }
 
 impl Scanner {
@@ -24,7 +25,7 @@ impl Scanner {
         search_path: PathBuf,
         pattern: RepositoryPattern,
         max_concurrent: usize,
-        verbose: bool,
+        verbose: u8,
     ) -> Self {
         Self {
             search_path,
@@ -34,11 +35,16 @@ impl Scanner {
         }
     }
 
-    /// Perform the async scan for matching repositories
-    pub async fn scan(&self) -> Result<Vec<MatchResult>> {
+    /// Perform the async scan for matching repositories with progress tracking
+    pub async fn scan(
+        &self,
+        progress_tx: Option<mpsc::UnboundedSender<ProgressMessage>>,
+    ) -> Result<Vec<MatchResult>> {
         let results = Arc::new(Mutex::new(Vec::new()));
         let semaphore = Arc::new(Semaphore::new(self.max_concurrent));
         let pattern = Arc::new(self.pattern.clone());
+
+        let progress_tx = Arc::new(progress_tx);
 
         // Start scanning from the root path
         self.scan_directory(
@@ -46,6 +52,7 @@ impl Scanner {
             results.clone(),
             semaphore.clone(),
             pattern.clone(),
+            progress_tx.clone(),
         )
         .await??;
 
@@ -67,11 +74,17 @@ impl Scanner {
         results: Arc<Mutex<Vec<MatchResult>>>,
         semaphore: Arc<Semaphore>,
         pattern: Arc<RepositoryPattern>,
+        progress_tx: Arc<Option<mpsc::UnboundedSender<ProgressMessage>>>,
     ) -> tokio::task::JoinHandle<Result<()>> {
         let verbose = self.verbose;
         let scanner = self.clone();
 
         tokio::spawn(async move {
+            // Send progress update that we're scanning this directory
+            if let Some(tx) = progress_tx.as_ref() {
+                let _ = tx.send(ProgressMessage::ScanningDirectory(path.clone()));
+            }
+
             // Acquire semaphore permit for bounded concurrency
             let _permit = semaphore.acquire().await.map_err(|_| {
                 FsgitError::Io(std::io::Error::new(
@@ -85,7 +98,13 @@ impl Scanner {
                 Ok(entries) => entries,
                 Err(e) => {
                     // Soft failure - permission denied or other IO errors
-                    if verbose {
+                    if let Some(tx) = progress_tx.as_ref() {
+                        let _ = tx.send(ProgressMessage::Warning(format!(
+                            "Warning: Cannot read directory {}: {}",
+                            path.display(),
+                            e
+                        )));
+                    } else if verbose >= 1 {
                         eprintln!("Warning: Cannot read directory {}: {}", path.display(), e);
                     }
                     return Ok(());
@@ -111,18 +130,33 @@ impl Scanner {
                             .collect();
 
                         if !matching_remotes.is_empty() {
-                            // This repo matches! Add it to results
-                            let mut results_guard = results.lock().await;
-                            results_guard.push(MatchResult {
+                            // This repo matches!
+                            let match_result = MatchResult {
                                 path: path.clone(),
                                 remotes: matching_remotes,
-                            });
+                            };
+
+                            // Send progress update for the match
+                            if let Some(tx) = progress_tx.as_ref() {
+                                let _ = tx.send(ProgressMessage::MatchFound(match_result.clone()));
+                            }
+
+                            // Add to results
+                            let mut results_guard = results.lock().await;
+                            results_guard.push(match_result);
                         }
-                    } else if verbose {
-                        eprintln!(
-                            "Warning: Failed to read remotes from git repo at {}",
-                            path.display()
-                        );
+                    } else {
+                        if let Some(tx) = progress_tx.as_ref() {
+                            let _ = tx.send(ProgressMessage::Warning(format!(
+                                "Warning: Failed to read remotes from git repo at {}",
+                                path.display()
+                            )));
+                        } else if verbose >= 1 {
+                            eprintln!(
+                                "Warning: Failed to read remotes from git repo at {}",
+                                path.display()
+                            );
+                        }
                     }
 
                     // CRITICAL: Return early - don't scan subdirectories of git repos
@@ -146,6 +180,7 @@ impl Scanner {
                     results.clone(),
                     semaphore.clone(),
                     pattern.clone(),
+                    progress_tx.clone(),
                 );
                 tasks.push(task);
             }
@@ -153,7 +188,12 @@ impl Scanner {
             // Wait for all subtasks to complete
             for task in tasks {
                 if let Err(e) = task.await? {
-                    if verbose {
+                    if let Some(tx) = progress_tx.as_ref() {
+                        let _ = tx.send(ProgressMessage::Warning(format!(
+                            "Warning: Scan task failed: {}",
+                            e
+                        )));
+                    } else if verbose >= 1 {
                         eprintln!("Warning: Scan task failed: {}", e);
                     }
                 }

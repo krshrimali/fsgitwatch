@@ -25,7 +25,12 @@ pub struct Cli {
     #[arg(long)]
     pub json: bool,
 
-    /// Verbose output (show warnings and debugging information)
-    #[arg(short, long)]
-    pub verbose: bool,
+    /// Verbose output (show directories being scanned and warnings)
+    /// Use -v to show warnings, -vv to also show directories being scanned
+    #[arg(short, long, action = clap::ArgAction::Count)]
+    pub verbose: u8,
+
+    /// Disable progress bar (automatically disabled with --json)
+    #[arg(long)]
+    pub no_progress: bool,
 }
