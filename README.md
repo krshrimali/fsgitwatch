@@ -23,7 +23,7 @@ This project was built using [Claude Code](https://claude.com/claude-code) with 
 
 ```bash
 # Clone the repository
-git clone <repository-url>
+git clone https://github.com/krshrimali/fsgitwatch
 cd fsgitwatch
 
 # Build in release mode
