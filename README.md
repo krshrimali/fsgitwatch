@@ -14,6 +14,29 @@ This project was built using [Claude Code](https://claude.com/claude-code) with 
 
 > There is one problem I see now. I see that for folders like home directory where there are A LOT OF documents, it's going to be very slow, very very slow in fact. Can we think of showing a progress bar and showing them the folders we find on the "fly", this can be optional (progress bar) to the users - to avoid noise in case they don't want it. We should figure out a way to show them the estimated folders that we'll be iterating through as well for the progress bar - you should first check how feasible it is as I don't want to slowdown things for them. Additionally, add more verbosity with -v flag, that is - let them know the folders the CLI is iterating through (this should be configurable for verbosity as well). Store the prompt I'm asking in README.md alongside my main prompt for the record.
 
+## User Story
+
+**The Problem**: As a developer, I frequently clone repositories to different locations on my filesystem - some in `~/projects`, others in `~/work`, maybe some in `~/tmp` for quick tests. Weeks later, when I need to find a specific repository, I can't remember where I cloned it. I end up using `find` or manually `cd`-ing into directories and running `git remote -v` repeatedly.
+
+**The Solution**: `fsgitwatch` solves this by quickly scanning your filesystem for git repositories matching an owner/repo pattern. It handles both SSH and HTTPS remote URLs, checks all configured remotes (not just origin), and streams results in real-time with a progress bar. What would take minutes of manual searching now takes seconds.
+
+**Example Workflow**:
+```bash
+# "Where did I clone that claude-code repo?"
+$ fsgitwatch anthropics/claude-code ~
+
+# Real-time progress and streaming results
+Scanning directories... ████████████████████ 1,234 dirs scanned
+
+Found 2 matching repositories for 'anthropics/claude-code':
+
+1. /Users/you/work/claude-code
+   origin: https://github.com/anthropics/claude-code.git
+
+2. /Users/you/projects/ai-tools/claude-code
+   origin: git@github.com:anthropics/claude-code.git
+```
+
 ## Features
 
 - **Owner/Repo Pattern Matching**: Search using format like `anthropics/claude-code`
@@ -95,6 +118,59 @@ Options:
 8. **Streaming Results**: Displays matching repositories immediately as they're found
 
 ## Architecture
+
+### System Flow
+
+```mermaid
+flowchart TD
+    A[CLI Input: owner/repo + path] --> B[Parse Pattern]
+    B --> C[Initialize Progress Tracker]
+    C --> D[Start Async Directory Scanner]
+
+    D --> E{Directory Entry}
+    E -->|Regular Dir| F[Spawn Async Task<br/>Bounded by Semaphore]
+    E -->|.git Found| G[Git Remote Extractor]
+
+    F --> H{Contains .git?}
+    H -->|Yes| G
+    H -->|No| I[Scan Subdirectories]
+    I --> E
+
+    G --> J[spawn_blocking<br/>git2-rs operations]
+    J --> K[Extract All Remotes<br/>origin, upstream, etc.]
+    K --> L[URL Normalizer]
+
+    L --> M{Parse SSH/HTTPS URL}
+    M -->|SSH| N[git@github.com:owner/repo.git]
+    M -->|HTTPS| O[https://github.com/owner/repo.git]
+
+    N --> P[Extract owner/repo]
+    O --> P
+
+    P --> Q{Pattern Match?}
+    Q -->|Match| R[Send to Progress Channel]
+    Q -->|No Match| S[Prune: Skip Subdirectories]
+
+    S --> T{More Directories?}
+    R --> U[Stream Result to User]
+    U --> V[Update Progress Bar]
+    V --> T
+
+    T -->|Yes| E
+    T -->|No| W[Format Output]
+    W --> X{Output Mode}
+    X -->|Human| Y[Colored Terminal Output]
+    X -->|JSON| Z[JSON Serialization]
+
+    Y --> AA[Display Results]
+    Z --> AA
+
+    style D fill:#e1f5ff
+    style G fill:#fff4e1
+    style Q fill:#ffe1e1
+    style R fill:#e1ffe1
+    style S fill:#ffe1e1
+```
 
 ### Key Components
 
