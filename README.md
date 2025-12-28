@@ -141,8 +141,8 @@ flowchart TD
     K --> L[URL Normalizer]
 
     L --> M{Parse SSH/HTTPS URL}
-    M -->|SSH| N[git@github.com:owner/repo.git]
-    M -->|HTTPS| O[https://github.com/owner/repo.git]
+    M -->|SSH| N["git@github.com:owner/repo.git"]
+    M -->|HTTPS| O["https://github.com/owner/repo.git"]
 
     N --> P[Extract owner/repo]
     O --> P
